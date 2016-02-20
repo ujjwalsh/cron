@@ -32,6 +32,9 @@ type Schedule interface {
 
 // Entry consists of a schedule and the func to execute on that schedule.
 type Entry struct {
+	Description string
+	Spec        string
+
 	// The schedule on which this job should be run.
 	Schedule Schedule
 
@@ -45,6 +48,8 @@ type Entry struct {
 
 	// The Job to run.
 	Job Job
+
+	ExecTimes int // Execute times count.
 }
 
 // byTime is a wrapper for sorting the entry array by time
@@ -83,32 +88,33 @@ type FuncJob func()
 func (f FuncJob) Run() { f() }
 
 // AddFunc adds a func to the Cron to be run on the given schedule.
-func (c *Cron) AddFunc(spec string, cmd func()) error {
-	return c.AddJob(spec, FuncJob(cmd))
+func (c *Cron) AddFunc(desc, spec string, cmd func()) (*Entry, error) {
+	return c.AddJob(desc, spec, FuncJob(cmd))
 }
 
 // AddFunc adds a Job to the Cron to be run on the given schedule.
-func (c *Cron) AddJob(spec string, cmd Job) error {
+func (c *Cron) AddJob(desc, spec string, cmd Job) (*Entry, error) {
 	schedule, err := Parse(spec)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	c.Schedule(schedule, cmd)
-	return nil
+	return c.Schedule(desc, spec, schedule, cmd), nil
 }
 
 // Schedule adds a Job to the Cron to be run on the given schedule.
-func (c *Cron) Schedule(schedule Schedule, cmd Job) {
+func (c *Cron) Schedule(desc, spec string, schedule Schedule, cmd Job) *Entry {
 	entry := &Entry{
-		Schedule: schedule,
-		Job:      cmd,
+		Description: desc,
+		Spec:        spec,
+		Schedule:    schedule,
+		Job:         cmd,
 	}
-	if !c.running {
+	if c.running {
+		c.add <- entry
+	} else {
 		c.entries = append(c.entries, entry)
-		return
 	}
-
-	c.add <- entry
+	return entry
 }
 
 // Entries returns a snapshot of the cron entries.
@@ -157,6 +163,7 @@ func (c *Cron) run() {
 					break
 				}
 				go e.Job.Run()
+				e.ExecTimes++
 				e.Prev = e.Next
 				e.Next = e.Schedule.Next(effective)
 			}
@@ -192,10 +199,13 @@ func (c *Cron) entrySnapshot() []*Entry {
 	entries := []*Entry{}
 	for _, e := range c.entries {
 		entries = append(entries, &Entry{
-			Schedule: e.Schedule,
-			Next:     e.Next,
-			Prev:     e.Prev,
-			Job:      e.Job,
+			Description: e.Description,
+			Spec:        e.Spec,
+			Schedule:    e.Schedule,
+			Next:        e.Next,
+			Prev:        e.Prev,
+			Job:         e.Job,
+			ExecTimes:   e.ExecTimes,
 		})
 	}
 	return entries
