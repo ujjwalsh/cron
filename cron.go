@@ -3,6 +3,8 @@
 package cron
 
 import (
+	"log"
+	"runtime"
 	"sort"
 	"time"
 )
@@ -16,6 +18,7 @@ type Cron struct {
 	add      chan *Entry
 	snapshot chan []*Entry
 	running  bool
+	ErrorLog *log.Logger
 }
 
 // Job is an interface for submitted cron jobs.
@@ -79,6 +82,7 @@ func New() *Cron {
 		stop:     make(chan struct{}),
 		snapshot: make(chan []*Entry),
 		running:  false,
+		ErrorLog: nil,
 	}
 }
 
@@ -92,7 +96,7 @@ func (c *Cron) AddFunc(desc, spec string, cmd func()) (*Entry, error) {
 	return c.AddJob(desc, spec, FuncJob(cmd))
 }
 
-// AddFunc adds a Job to the Cron to be run on the given schedule.
+// AddJob adds a Job to the Cron to be run on the given schedule.
 func (c *Cron) AddJob(desc, spec string, cmd Job) (*Entry, error) {
 	schedule, err := Parse(spec)
 	if err != nil {
@@ -133,6 +137,18 @@ func (c *Cron) Start() {
 	go c.run()
 }
 
+func (c *Cron) runWithRecovery(j Job) {
+	defer func() {
+		if r := recover(); r != nil {
+			const size = 64 << 10
+			buf := make([]byte, size)
+			buf = buf[:runtime.Stack(buf, false)]
+			c.logf("cron: panic running job: %v\n%s", r, buf)
+		}
+	}()
+	j.Run()
+}
+
 // Run the scheduler.. this is private just due to the need to synchronize
 // access to the 'running' state variable.
 func (c *Cron) run() {
@@ -162,7 +178,7 @@ func (c *Cron) run() {
 				if e.Next != effective {
 					break
 				}
-				go e.Job.Run()
+				go c.runWithRecovery(e.Job)
 				e.ExecTimes++
 				e.Prev = e.Next
 				e.Next = e.Schedule.Next(effective)
@@ -171,7 +187,7 @@ func (c *Cron) run() {
 
 		case newEntry := <-c.add:
 			c.entries = append(c.entries, newEntry)
-			newEntry.Next = newEntry.Schedule.Next(now)
+			newEntry.Next = newEntry.Schedule.Next(time.Now().Local())
 
 		case <-c.snapshot:
 			c.snapshot <- c.entrySnapshot()
@@ -182,6 +198,15 @@ func (c *Cron) run() {
 
 		// 'now' should be updated after newEntry and snapshot cases.
 		now = time.Now().Local()
+	}
+}
+
+// Logs an error to stderr or to the configured error log
+func (c *Cron) logf(format string, args ...interface{}) {
+	if c.ErrorLog != nil {
+		c.ErrorLog.Printf(format, args...)
+	} else {
+		log.Printf(format, args...)
 	}
 }
 
