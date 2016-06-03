@@ -181,7 +181,7 @@ func (c *Cron) run() {
 				go c.runWithRecovery(e.Job)
 				e.ExecTimes++
 				e.Prev = e.Next
-				e.Next = e.Schedule.Next(effective)
+				e.Next = e.Schedule.Next(now)
 			}
 			continue
 
